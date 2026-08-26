@@ -5,8 +5,8 @@ from fastapi.templating import Jinja2Templates
 
 app = FastAPI()
 
-app.mount("/static", StaticFiles(directory="pi_client/static"), name="static")
-templates = Jinja2Templates(directory="pi_client/templates")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
 
 # Change host/port to point to central deployment when going live
 SIGNALING_SERVER_HOST = "localhost:8000"
