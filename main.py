@@ -14,6 +14,7 @@ SIGNALING_SERVER_HOST = "localhost:8000"
 @app.get("/", response_class=HTMLResponse)
 async def get_student_kiosk(request: Request):
     return templates.TemplateResponse(
+        request,
         "student.html",
-        {"request": request, "signaling_host": SIGNALING_SERVER_HOST}
+        {"request": request}
     )
