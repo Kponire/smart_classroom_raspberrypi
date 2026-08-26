@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ClassBridge - Rural Terminal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/css/student.css" />
+  </head>
+  <body>
+    <div class="header">
+      <div class="title">
+        <svg
+          width="28"
+          height="28"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#3b82f6"
+          stroke-width="2.5"
+        >
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+          <path
+            d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"
+          />
+        </svg>
+        ClassBridge Remote Learning Terminal
+      </div>
+      <div class="live-tag">CONNECTED</div>
+    </div>
+    <div class="viewport">
+      <div class="main-feed">
+        <video id="teacherVideo" autoplay playsinline></video>
+        <div class="overlay-label">Teacher Display</div>
+      </div>
+      <div class="self-feed">
+        <video id="classroomVideo" autoplay playsinline muted></video>
+        <div class="overlay-label">Classroom Camera</div>
+      </div>
+    </div>
+    <script>
+      window.SIGNALING_HOST = "{{ signaling_host }}";
+    </script>
+    <script src="/static/js/student.js"></script>
+  </body>
+</html>
