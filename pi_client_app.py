@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtGui import QImage, QPixmap
 
-from qasync import QEventLoop, asyncSlot
+from qasync import QEventLoop
 import websockets
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, VideoStreamTrack
 from av import VideoFrame
@@ -18,7 +18,7 @@ from av import VideoFrame
 # ---------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------
-# Laptop's IP address running server.main:app
+# Update with your laptop's local IP address running server.main:app
 SIGNALING_SERVER_URL = "ws://10.83.65.139:8000/ws/student"
 
 # ---------------------------------------------------------------------
@@ -40,15 +40,14 @@ class OpenCVVideoTrack(VideoStreamTrack):
         pts, time_base = await self.next_timestamp()
         
         if self.current_frame is not None:
-            # Convert BGR (OpenCV) to RGB for PyAV
+            # Convert BGR (OpenCV format) to RGB for PyAV
             rgb_frame = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
             av_frame = VideoFrame.from_ndarray(rgb_frame, format="rgb24")
         else:
-            # Fallback blank black frame
-            blank = cv2.imread("") if False else cv2.cvtColor(
-                cv2.cvtColor(cv2.Mat(), cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2RGB
-            )
-            av_frame = VideoFrame.from_ndarray(rgb_frame, format="rgb24")
+            # Send a blank black frame if no frame is captured yet
+            import numpy as np
+            blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            av_frame = VideoFrame.from_ndarray(blank_frame, format="rgb24")
             
         av_frame.pts = pts
         av_frame.time_base = time_base
@@ -73,13 +72,13 @@ class LocalCameraThread(QThread):
         while self._run_flag:
             ret, frame = cap.read()
             if ret:
-                # Convert frame for Qt rendering
+                # Convert frame for Qt UI display
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb_frame.shape
                 bytes_per_line = ch * w
                 qt_img = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
                 
-                # Emit Qt image for local display and raw OpenCV frame for WebRTC
+                # Emit Qt image for local display and raw BGR frame for WebRTC
                 self.change_pixmap_signal.emit(qt_img, frame)
             self.msleep(33)  # ~30 FPS
 
@@ -125,11 +124,11 @@ class ClassBridgeStudentApp(QWidget):
         header_layout.addStretch()
         header_layout.addWidget(self.status_badge)
 
-        # Main Viewport
+        # Main Viewport Layout
         viewport_layout = QHBoxLayout()
         viewport_layout.setSpacing(12)
 
-        # Teacher View (Incoming WebRTC Remote Feed)
+        # Teacher View (Incoming WebRTC Feed)
         self.teacher_card = QFrame()
         self.teacher_card.setStyleSheet("background-color: #090d16; border-radius: 12px; border: 1px solid #1e293b;")
         teacher_layout = QVBoxLayout(self.teacher_card)
@@ -168,10 +167,9 @@ class ClassBridgeStudentApp(QWidget):
         pixmap = QPixmap.fromImage(qt_img)
         self.classroom_video.setPixmap(pixmap)
         
-        # Pass raw OpenCV frame into the WebRTC stream track
+        # Pass raw OpenCV frame to WebRTC stream track
         self.local_track.update_frame(cv_frame)
 
-    @asyncSlot()
     async def connect_webrtc(self):
         """Asynchronous WebRTC setup and WebSocket signaling."""
         self.pc = RTCPeerConnection()
@@ -193,7 +191,7 @@ class ClassBridgeStudentApp(QWidget):
                     data = json.loads(msg)
 
                     if "offer" in data:
-                        # Teacher sent an offer -> Set description and send answer back
+                        # Teacher sent offer -> Set remote description & generate answer
                         offer = RTCSessionDescription(
                             sdp=data["offer"]["sdp"], 
                             type=data["offer"]["type"]
@@ -239,6 +237,7 @@ class ClassBridgeStudentApp(QWidget):
                 
                 self.teacher_video.setPixmap(QPixmap.fromImage(qt_img))
             except Exception as e:
+                print(f"Remote track error: {e}")
                 break
 
     def closeEvent(self, event):
@@ -253,14 +252,14 @@ class ClassBridgeStudentApp(QWidget):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     
-    # Integration of asyncio event loop with PyQt6
+    # Integrate asyncio event loop with PyQt6
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
 
     window = ClassBridgeStudentApp()
     window.showMaximized()
 
-    # Schedule WebRTC signaling task
+    # Pass the raw coroutine into create_task
     loop.create_task(window.connect_webrtc())
 
     with loop:
