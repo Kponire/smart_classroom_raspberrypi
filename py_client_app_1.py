@@ -1,6 +1,7 @@
 import sys
 import json
 import asyncio
+import time
 import cv2
 import numpy as np
 
@@ -72,7 +73,7 @@ class LocalCameraThread(QThread):
                 qt_img = QImage(rgb_frame.data, w, h, bytes_per_line, 
                               QImage.Format.Format_RGB888)
                 self.change_pixmap_signal.emit(qt_img, frame)
-            await asyncio.sleep(0.033)  # ~30 FPS
+            time.sleep(0.033)  # ~30 FPS
 
         if self.cap:
             self.cap.release()
