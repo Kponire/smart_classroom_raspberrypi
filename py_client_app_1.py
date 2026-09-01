@@ -1,11 +1,12 @@
 import sys
 import json
 import asyncio
+import time
 import cv2
 import numpy as np
 
 from PyQt6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout, 
-                             QHBoxLayout, QFrame)
+                             QHBoxLayout, QFrame, QStackedLayout)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 
@@ -57,7 +58,7 @@ class LocalCameraThread(QThread):
         self.cap = None
 
     def run(self):
-        self.cap = cv2.VideoCapture(self.camera_index)
+        self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.cap.set(cv2.CAP_PROP_FPS, 30)
@@ -72,7 +73,7 @@ class LocalCameraThread(QThread):
                 qt_img = QImage(rgb_frame.data, w, h, bytes_per_line, 
                               QImage.Format.Format_RGB888)
                 self.change_pixmap_signal.emit(qt_img, frame)
-            QThread.msleep(33)  # ~30 FPS
+            time.sleep(0.033)  # ~30 FPS
 
         if self.cap:
             self.cap.release()
@@ -336,16 +337,12 @@ class ClassBridgeStudentApp(QWidget):
             print(f"Error handling offer: {e}")
 
     async def handle_candidate(self, data):
-        """Handle ICE candidate from teacher - FIXED for aiortc API"""
+        """Handle ICE candidate from teacher"""
         try:
-            # Extract candidate info - aiortc expects these specific fields
-            candidate_info = data["candidate"]
-            
-            # Create RTCIceCandidate with correct parameter names
             candidate = RTCIceCandidate(
-                sdpMid=candidate_info.get("sdpMid"),
-                sdpMLineIndex=candidate_info.get("sdpMLineIndex"),
-                candidate=candidate_info.get("candidate")
+                sdpMid=data["candidate"].get("sdpMid"),
+                sdpMLineIndex=data["candidate"].get("sdpMLineIndex"),
+                candidate=data["candidate"].get("candidate")
             )
             await self.pc.addIceCandidate(candidate)
         except Exception as e:
