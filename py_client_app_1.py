@@ -16,7 +16,7 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, Vi
 from av import VideoFrame
 
 # Configuration
-SIGNALING_SERVER_URL = "ws://10.83.65.139:8000/ws/student"
+SIGNALING_SERVER_URL = "ws://10.131.151.48:8000/ws/student"
 
 class OpenCVVideoTrack(VideoStreamTrack):
     """Custom video track that sends frames from OpenCV"""
