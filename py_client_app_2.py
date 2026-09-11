@@ -6,14 +6,17 @@ import cv2
 import numpy as np
 
 from PyQt6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout, 
-                             QHBoxLayout, QFrame, QLineEdit, QPushButton)
-from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSettings
+                             QHBoxLayout, QFrame, QStackedLayout)
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 
 from qasync import QEventLoop
 import websockets
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, VideoStreamTrack
 from av import VideoFrame
+
+# Configuration
+SIGNALING_SERVER_URL = "ws://10.131.151.139:8000/ws/student"
 
 class OpenCVVideoTrack(VideoStreamTrack):
     """Custom video track that sends frames from OpenCV"""
@@ -23,15 +26,20 @@ class OpenCVVideoTrack(VideoStreamTrack):
         self._frame_lock = asyncio.Lock()
 
     def update_frame(self, frame):
+        """Update the current frame to be sent"""
         self.current_frame = frame
 
     async def recv(self):
+        """Receive the next video frame"""
         pts, time_base = await self.next_timestamp()
+        
         async with self._frame_lock:
             if self.current_frame is not None:
+                # Convert BGR to RGB
                 rgb_frame = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
                 av_frame = VideoFrame.from_ndarray(rgb_frame, format="rgb24")
             else:
+                # Blank frame if no camera feed
                 blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
                 av_frame = VideoFrame.from_ndarray(blank_frame, format="rgb24")
             
@@ -58,12 +66,14 @@ class LocalCameraThread(QThread):
         while self._run_flag and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
+                # Convert to RGB for Qt
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb_frame.shape
                 bytes_per_line = ch * w
-                qt_img = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+                qt_img = QImage(rgb_frame.data, w, h, bytes_per_line, 
+                              QImage.Format.Format_RGB888)
                 self.change_pixmap_signal.emit(qt_img, frame)
-            time.sleep(0.033)
+            time.sleep(0.033)  # ~30 FPS
 
         if self.cap:
             self.cap.release()
@@ -79,18 +89,12 @@ class ClassBridgeStudentApp(QWidget):
     
     def __init__(self):
         super().__init__()
-        self.settings = QSettings("ClassBridge", "StudentApp")
-        self.server_ip = self.settings.value("server_ip", "10.131.151.139")
-
         self.pc = None
-        self.ws = None
         self.local_track = OpenCVVideoTrack()
         self.self_view_enabled = False
         self.teacher_mic_muted = False
         self.teacher_cam_off = False
         self.remote_track_task = None
-        self.webrtc_task = None
-
         self.init_ui()
         self.start_camera()
 
@@ -113,37 +117,8 @@ class ClassBridgeStudentApp(QWidget):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(16, 12, 16, 12)
 
-        title_label = QLabel("ClassBridge Station")
+        title_label = QLabel("ClassBridge Learning Station")
         title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #ffffff;")
-
-        # IP Input Configuration Widgets
-        ip_label = QLabel("Server IP:")
-        ip_label.setStyleSheet("font-size: 13px; color: #94a3b8;")
-        
-        self.ip_input = QLineEdit(self.server_ip)
-        self.ip_input.setFixedWidth(130)
-        self.ip_input.setStyleSheet("""
-            background-color: #1e293b; 
-            color: white; 
-            border: 1px solid #334155; 
-            border-radius: 4px; 
-            padding: 4px 8px;
-            font-size: 13px;
-        """)
-
-        self.connect_btn = QPushButton("Connect")
-        self.connect_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2563eb; 
-                color: white; 
-                font-weight: bold; 
-                border-radius: 4px; 
-                padding: 5px 12px;
-                font-size: 12px;
-            }
-            QPushButton:hover { background-color: #1d4ed8; }
-        """)
-        self.connect_btn.clicked.connect(self.on_ip_update)
 
         # Status indicators
         self.status_badge = QLabel(" INITIALIZING ")
@@ -158,15 +133,14 @@ class ClassBridgeStudentApp(QWidget):
         
         self.mic_status = QLabel("🎤")
         self.mic_status.setStyleSheet("font-size: 16px;")
+        self.mic_status.setToolTip("Microphone status")
+        
         self.cam_status = QLabel("📷")
         self.cam_status.setStyleSheet("font-size: 16px;")
+        self.cam_status.setToolTip("Camera status")
 
         header_layout.addWidget(title_label)
         header_layout.addStretch()
-        header_layout.addWidget(ip_label)
-        header_layout.addWidget(self.ip_input)
-        header_layout.addWidget(self.connect_btn)
-        header_layout.addSpacing(15)
         header_layout.addWidget(self.mic_status)
         header_layout.addWidget(self.cam_status)
         header_layout.addWidget(self.status_badge)
@@ -179,11 +153,17 @@ class ClassBridgeStudentApp(QWidget):
             border: 1px solid #1e293b;
         """)
         
+        # Main Display: Large view showing Teacher Feed or Screen Share
         self.teacher_video = QLabel("Waiting for Teacher Stream...", self.stage_box)
         self.teacher_video.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.teacher_video.setStyleSheet("color: #64748b; font-size: 18px; font-weight: 500;")
+        self.teacher_video.setStyleSheet("""
+            color: #64748b; 
+            font-size: 18px; 
+            font-weight: 500;
+        """)
         self.teacher_video.setScaledContents(True)
 
+        # Self View PiP Frame (Bottom Right Corner)
         self.pip_card = QFrame(self.stage_box)
         self.pip_card.setStyleSheet("""
             background-color: #0f172a; 
@@ -198,110 +178,166 @@ class ClassBridgeStudentApp(QWidget):
         self.classroom_video.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.classroom_video.setScaledContents(True)
         pip_layout.addWidget(self.classroom_video)
+
+        # Show local camera self-view by default if enabled
         self.pip_card.setVisible(False)
 
         root_layout.addWidget(header)
         root_layout.addWidget(self.stage_box, stretch=1)
 
     def resizeEvent(self, event):
+        """Position widgets when window is resized"""
         super().resizeEvent(event)
         w = self.stage_box.width()
         h = self.stage_box.height()
+        
+        # Expand teacher stream across the full stage box
         self.teacher_video.setGeometry(0, 0, w, h)
-        pip_w, pip_h = self.pip_card.width(), self.pip_card.height()
+        
+        # Position self-view in bottom-right corner with padding
+        pip_w = self.pip_card.width()
+        pip_h = self.pip_card.height()
         self.pip_card.move(w - pip_w - 20, h - pip_h - 20)
 
     def start_camera(self):
+        """Start the local camera thread"""
         self.camera_thread = LocalCameraThread(camera_index=0)
         self.camera_thread.change_pixmap_signal.connect(self.update_classroom_feed)
         self.camera_thread.start()
 
     def update_classroom_feed(self, qt_img, cv_frame):
-        self.classroom_video.setPixmap(QPixmap.fromImage(qt_img))
+        """Update the local camera feed display"""
+        pixmap = QPixmap.fromImage(qt_img)
+        self.classroom_video.setPixmap(pixmap)
         self.local_track.update_frame(cv_frame)
 
-    def on_ip_update(self):
-        new_ip = self.ip_input.text().strip()
-        if new_ip:
-            self.server_ip = new_ip
-            self.settings.setValue("server_ip", new_ip)
-            print(f"Server IP updated to: {new_ip}")
-            self.reconnect_webrtc()
-
-    def reconnect_webrtc(self):
-        if self.webrtc_task and not self.webrtc_task.done():
-            self.webrtc_task.cancel()
-        self.webrtc_task = asyncio.create_task(self.connect_webrtc())
-
     async def connect_webrtc(self):
-        if self.pc:
-            await self.pc.close()
-            
+        """Connect to the signaling server and establish WebRTC connection"""
         self.pc = RTCPeerConnection()
+        
+        # Add local video track
         self.pc.addTrack(self.local_track)
 
         @self.pc.on("track")
         def on_track(track):
             if track.kind == "video":
                 if self.remote_track_task is None or self.remote_track_task.done():
-                    self.remote_track_task = asyncio.create_task(self.render_remote_track(track))
+                    self.remote_track_task = asyncio.create_task(
+                        self.render_remote_track(track)
+                    )
 
-        signaling_url = f"ws://{self.server_ip}:8000/ws/student"
         try:
-            async with websockets.connect(signaling_url) as ws:
-                self.ws = ws
+            async with websockets.connect(SIGNALING_SERVER_URL) as ws:
                 self.status_badge.setText(" READY ")
-                self.status_badge.setStyleSheet("background-color: #22c55e; color: white; font-weight: bold; font-size: 12px; border-radius: 4px; padding: 4px 8px;")
+                self.status_badge.setStyleSheet("""
+                    background-color: #22c55e; 
+                    color: white; 
+                    font-weight: bold; 
+                    font-size: 12px; 
+                    border-radius: 4px; 
+                    padding: 4px 8px;
+                """)
 
                 async for msg in ws:
                     data = json.loads(msg)
+
+                    # Handle control messages from teacher
                     if data.get("type") == "control":
                         await self.handle_control_message(data)
+
+                    # Handle WebRTC signaling
                     elif "offer" in data:
                         await self.handle_offer(data, ws)
+                    
                     elif "candidate" in data and data["candidate"]:
                         await self.handle_candidate(data)
 
-        except asyncio.CancelledError:
-            pass
         except websockets.ConnectionClosed:
+            print("WebSocket connection closed")
             self.status_badge.setText(" DISCONNECTED ")
-            self.status_badge.setStyleSheet("background-color: #64748b; color: white; font-weight: bold; font-size: 12px; border-radius: 4px; padding: 4px 8px;")
+            self.status_badge.setStyleSheet("""
+                background-color: #64748b; 
+                color: white; 
+                font-weight: bold; 
+                font-size: 12px; 
+                border-radius: 4px; 
+                padding: 4px 8px;
+            """)
         except Exception as e:
             print(f"Signaling error: {e}")
             self.status_badge.setText(" OFFLINE ")
-            self.status_badge.setStyleSheet("background-color: #dc2626; color: white; font-weight: bold; font-size: 12px; border-radius: 4px; padding: 4px 8px;")
+            self.status_badge.setStyleSheet("""
+                background-color: #dc2626; 
+                color: white; 
+                font-weight: bold; 
+                font-size: 12px; 
+                border-radius: 4px; 
+                padding: 4px 8px;
+            """)
+            # Retry connection after delay
             await asyncio.sleep(5)
-            self.webrtc_task = asyncio.create_task(self.connect_webrtc())
+            asyncio.create_task(self.connect_webrtc())
 
     async def handle_control_message(self, data):
+        """Handle control messages from teacher"""
         action = data.get("action")
+        
         if action == "toggle-self-view":
             self.self_view_enabled = data.get("enabled", False)
             self.pip_card.setVisible(self.self_view_enabled)
+            print(f"Self-view toggled: {self.self_view_enabled}")
+            
         elif action == "toggle-mic":
             self.teacher_mic_muted = data.get("muted", False)
             self.mic_status.setText("🔇" if self.teacher_mic_muted else "🎤")
+            self.mic_status.setToolTip(
+                "Microphone muted by teacher" if self.teacher_mic_muted else "Microphone active"
+            )
+            print(f"Mic toggled: {'muted' if self.teacher_mic_muted else 'unmuted'}")
+            
         elif action == "toggle-camera":
             self.teacher_cam_off = data.get("off", False)
             self.cam_status.setText("📷❌" if self.teacher_cam_off else "📷")
+            self.cam_status.setToolTip(
+                "Camera off by teacher" if self.teacher_cam_off else "Camera active"
+            )
+            print(f"Camera toggled: {'off' if self.teacher_cam_off else 'on'}")
 
     async def handle_offer(self, data, ws):
+        """Handle WebRTC offer from teacher"""
         try:
-            offer = RTCSessionDescription(sdp=data["offer"]["sdp"], type=data["offer"]["type"])
+            offer = RTCSessionDescription(
+                sdp=data["offer"]["sdp"], 
+                type=data["offer"]["type"]
+            )
             await self.pc.setRemoteDescription(offer)
+            
             answer = await self.pc.createAnswer()
             await self.pc.setLocalDescription(answer)
 
             await ws.send(json.dumps({
-                "answer": {"sdp": self.pc.localDescription.sdp, "type": self.pc.localDescription.type}
+                "answer": {
+                    "sdp": self.pc.localDescription.sdp,
+                    "type": self.pc.localDescription.type
+                }
             }))
+            
             self.status_badge.setText(" LIVE ")
-            self.status_badge.setStyleSheet("background-color: #dc2626; color: white; font-weight: bold; font-size: 12px; border-radius: 4px; padding: 4px 8px;")
+            self.status_badge.setStyleSheet("""
+                background-color: #dc2626; 
+                color: white; 
+                font-weight: bold; 
+                font-size: 12px; 
+                border-radius: 4px; 
+                padding: 4px 8px;
+            """)
+            print("WebRTC connection established")
+            
         except Exception as e:
             print(f"Error handling offer: {e}")
 
     async def handle_candidate(self, data):
+        """Handle ICE candidate from teacher"""
         try:
             candidate = RTCIceCandidate(
                 sdpMid=data["candidate"].get("sdpMid"),
@@ -313,20 +349,30 @@ class ClassBridgeStudentApp(QWidget):
             print(f"Error adding ICE candidate: {e}")
 
     async def render_remote_track(self, track):
+        """Render remote video track from teacher"""
         try:
             while True:
                 frame = await track.recv()
+                # Convert frame to QImage
                 img = frame.to_ndarray(format="bgr24")
                 rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                
                 h, w, ch = rgb_img.shape
                 bytes_per_line = ch * w
-                qt_img = QImage(rgb_img.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+                qt_img = QImage(rgb_img.data, w, h, bytes_per_line, 
+                              QImage.Format.Format_RGB888)
+                
+                # Update the display
                 self.teacher_video.setPixmap(QPixmap.fromImage(qt_img))
+                
         except Exception as e:
             print(f"Remote track error: {e}")
+            # Show error message on the display
             self.teacher_video.setText("Video stream lost\nReconnecting...")
 
     def closeEvent(self, event):
+        """Clean up when closing the application"""
+        print("Closing application...")
         if hasattr(self, 'camera_thread'):
             self.camera_thread.stop()
         if self.pc:
@@ -337,13 +383,15 @@ class ClassBridgeStudentApp(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
 
     window = ClassBridgeStudentApp()
     window.showMaximized()
 
-    window.webrtc_task = loop.create_task(window.connect_webrtc())
+    # Start WebRTC connection
+    loop.create_task(window.connect_webrtc())
 
     with loop:
         loop.run_forever()
