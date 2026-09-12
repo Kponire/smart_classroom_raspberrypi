@@ -14,6 +14,7 @@ from qasync import QEventLoop
 import websockets
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, VideoStreamTrack
 from av import VideoFrame
+from aiortc.contrib.signaling import object_from_dict
 
 class OpenCVVideoTrack(VideoStreamTrack):
     """Custom video track that sends frames from OpenCV"""
@@ -326,15 +327,18 @@ class ClassBridgeStudentApp(QWidget):
             self.status_badge.setStyleSheet("background-color: #dc2626; color: white; font-weight: bold;")
         except Exception as e:
             print(f"Error handling offer: {e}")
-
+    
     async def handle_candidate(self, data):
         try:
-            candidate = RTCIceCandidate(
-                sdpMid=data["candidate"].get("sdpMid"),
-                sdpMLineIndex=data["candidate"].get("sdpMLineIndex"),
-                candidate=data["candidate"].get("candidate")
-            )
-            await self.pc.addIceCandidate(candidate)
+            cand_data = data.get("candidate")
+            if cand_data:
+                ice_obj = {
+                    "candidate": cand_data.get("candidate"),
+                    "sdpMid": cand_data.get("sdpMid"),
+                    "sdpMLineIndex": cand_data.get("sdpMLineIndex")
+                }
+                candidate = object_from_dict({"type": "candidate", "candidate": ice_obj})
+                await self.pc.addIceCandidate(candidate)
         except Exception as e:
             print(f"Error adding ICE candidate: {e}")
 
