@@ -315,7 +315,7 @@ class ClassBridgeStudentApp(QWidget):
     async def render_remote_track(self, track):
         try:
             while True:
-                frame = await asyncio.wait_for(track.recv(), timeout=30.0)
+                frame = await track.recv()
                 img = frame.to_ndarray(format="bgr24")
                 rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb_img.shape
