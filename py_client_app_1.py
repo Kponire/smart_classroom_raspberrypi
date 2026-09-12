@@ -249,14 +249,19 @@ class ClassBridgeStudentApp(QWidget):
         async def on_ice_state_change():
             state = self.pc.iceConnectionState
             print(f"Student ICE Connection State: {state}")
+
             if state in ["connected", "completed"]:
                 self.status_badge.setText(" LIVE ")
                 self.status_badge.setStyleSheet("background-color: #dc2626; color: white; font-weight: bold;")
+            elif state == "checking":
+                self.status_badge.setText(" CONNECTING ")
             elif state in ["disconnected", "failed"]:
                 self.status_badge.setText(" RECONNECTING ")
                 self.status_badge.setStyleSheet("background-color: #eab308; color: black; font-weight: bold;")
-                # Clear old video display notice
-                self.teacher_video.setText("Connection lost\nWaiting for stream recovery...")
+                print("ICE connection lost. Restarting WebRTC...")
+                if self.remote_track_task:
+                    self.remote_track_task.cancel()
+                asyncio.create_task(self.restart_webrtc())
 
         signaling_url = f"ws://{self.server_ip}:8000/ws/student"
         try:
@@ -283,6 +288,19 @@ class ClassBridgeStudentApp(QWidget):
             self.status_badge.setStyleSheet("background-color: #dc2626; color: white; font-weight: bold;")
             await asyncio.sleep(3)
             self.webrtc_task = asyncio.create_task(self.connect_webrtc())
+
+    
+    async def restart_webrtc(self):
+        await asyncio.sleep(2)
+        try:
+            await self.cleanup_peer_connection()
+            if self.webrtc_task and not self.webrtc_task.done():
+                self.webrtc_task.cancel()
+            self.webrtc_task = asyncio.create_task(self.connect_webrtc())
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"WebRTC restart failed: {e}")
     
     async def cleanup_peer_connection(self):
         """Safely cleans up existing RTCPeerConnection and running rendering tasks."""
@@ -360,20 +378,56 @@ class ClassBridgeStudentApp(QWidget):
     async def render_remote_track(self, track):
         try:
             while True:
-                # Add a timeout so track.recv() doesn't hang indefinitely on a dead network stream
-                frame = await asyncio.wait_for(track.recv(), timeout=5.0)
-                img = frame.to_ndarray(format="bgr24")
-                rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                h, w, ch = rgb_img.shape
-                bytes_per_line = ch * w
-                qt_img = QImage(rgb_img.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-                self.teacher_video.setPixmap(QPixmap.fromImage(qt_img))
-        except asyncio.TimeoutError:
-            print("Remote video frame timeout. Network may have stalled.")
-            self.teacher_video.setText("Video stream stalled\nReconnecting...")
+                try:
+                    frame = await asyncio.wait_for(track.recv(), timeout=30.0)
+
+                    img = frame.to_ndarray(format="bgr24")
+                    rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+                    h,w,ch = rgb_img.shape
+                    bytes_per_line = ch * w
+                    qt_img = QImage(
+                        rgb_img.data,
+                        w,
+                        h,
+                        bytes_per_line,
+                        QImage.Format.Format_RGB888
+                    )
+                    self.teacher_video.setPixmap(QPixmap.fromImage(qt_img))
+                except asyncio.TimeoutError:
+                    print("Remote video frame timeout.")
+
+                    self.teacher_video.setText(
+                        "Video stream stalled\nReconnecting..."
+                    )
+                    # Actually reconnect
+                    await self.reconnect_after_video_failure()
+                    return
+
+        except asyncio.CancelledError:
+            raise
+
         except Exception as e:
             print(f"Remote track error: {e}")
-            self.teacher_video.setText("Video stream lost\nReconnecting...")
+            self.teacher_video.setText(
+                f"Video stream lost\nReconnecting..."
+            )
+            await self.reconnect_after_video_failure()
+    
+    async def reconnect_after_video_failure(self):
+        print("Starting WebRTC reconnection...")
+        try:
+            await self.cleanup_peer_connection()
+            await asyncio.sleep(2)
+            if self.webrtc_task and not self.webrtc_task.done():
+                self.webrtc_task.cancel()
+            self.webrtc_task = asyncio.create_task(
+                self.connect_webrtc()
+            )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"Reconnection error: {e}")
 
     def closeEvent(self, event):
         if hasattr(self, 'camera_thread'):
