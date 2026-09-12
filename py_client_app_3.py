@@ -80,7 +80,7 @@ class ClassBridgeStudentApp(QWidget):
     def __init__(self):
         super().__init__()
         self.settings = QSettings("ClassBridge", "StudentApp")
-        self.server_ip = self.settings.value("server_ip", "10.148.101.130")
+        self.server_ip = self.settings.value("server_ip", "10.131.151.139")
 
         self.pc = None
         self.ws = None
@@ -234,8 +234,9 @@ class ClassBridgeStudentApp(QWidget):
         self.webrtc_task = asyncio.create_task(self.connect_webrtc())
 
     async def connect_webrtc(self):
-        await self.cleanup_peer_connection()
-
+        if self.pc:
+            await self.pc.close()
+            
         self.pc = RTCPeerConnection()
         self.pc.addTrack(self.local_track)
 
@@ -245,25 +246,12 @@ class ClassBridgeStudentApp(QWidget):
                 if self.remote_track_task is None or self.remote_track_task.done():
                     self.remote_track_task = asyncio.create_task(self.render_remote_track(track))
 
-        @self.pc.on("iceconnectionstatechange")
-        async def on_ice_state_change():
-            state = self.pc.iceConnectionState
-            print(f"Student ICE Connection State: {state}")
-            if state in ["connected", "completed"]:
-                self.status_badge.setText(" LIVE ")
-                self.status_badge.setStyleSheet("background-color: #dc2626; color: white; font-weight: bold;")
-            elif state in ["disconnected", "failed"]:
-                self.status_badge.setText(" RECONNECTING ")
-                self.status_badge.setStyleSheet("background-color: #eab308; color: black; font-weight: bold;")
-                # Clear old video display notice
-                self.teacher_video.setText("Connection lost\nWaiting for stream recovery...")
-
         signaling_url = f"ws://{self.server_ip}:8000/ws/student"
         try:
             async with websockets.connect(signaling_url) as ws:
                 self.ws = ws
                 self.status_badge.setText(" READY ")
-                self.status_badge.setStyleSheet("background-color: #22c55e; color: white; font-weight: bold;")
+                self.status_badge.setStyleSheet("background-color: #22c55e; color: white; font-weight: bold; font-size: 12px; border-radius: 4px; padding: 4px 8px;")
 
                 async for msg in ws:
                     data = json.loads(msg)
@@ -274,25 +262,17 @@ class ClassBridgeStudentApp(QWidget):
                     elif "candidate" in data and data["candidate"]:
                         await self.handle_candidate(data)
 
-        except (asyncio.CancelledError, websockets.ConnectionClosed):
+        except asyncio.CancelledError:
+            pass
+        except websockets.ConnectionClosed:
             self.status_badge.setText(" DISCONNECTED ")
-            self.status_badge.setStyleSheet("background-color: #64748b; color: white; font-weight: bold;")
+            self.status_badge.setStyleSheet("background-color: #64748b; color: white; font-weight: bold; font-size: 12px; border-radius: 4px; padding: 4px 8px;")
         except Exception as e:
             print(f"Signaling error: {e}")
             self.status_badge.setText(" OFFLINE ")
-            self.status_badge.setStyleSheet("background-color: #dc2626; color: white; font-weight: bold;")
-            await asyncio.sleep(3)
+            self.status_badge.setStyleSheet("background-color: #dc2626; color: white; font-weight: bold; font-size: 12px; border-radius: 4px; padding: 4px 8px;")
+            await asyncio.sleep(5)
             self.webrtc_task = asyncio.create_task(self.connect_webrtc())
-    
-    async def cleanup_peer_connection(self):
-        """Safely cleans up existing RTCPeerConnection and running rendering tasks."""
-        if self.remote_track_task and not self.remote_track_task.done():
-            self.remote_track_task.cancel()
-            self.remote_track_task = None
-
-        if self.pc:
-            await self.pc.close()
-            self.pc = None
 
     async def handle_control_message(self, data):
         action = data.get("action")
@@ -308,12 +288,6 @@ class ClassBridgeStudentApp(QWidget):
 
     async def handle_offer(self, data, ws):
         try:
-            # Re-initialize peer connection if current one failed or closed
-            if self.pc is None or self.pc.iceConnectionState in ["failed", "closed"]:
-                await self.cleanup_peer_connection()
-                self.pc = RTCPeerConnection()
-                self.pc.addTrack(self.local_track)
-
             offer = RTCSessionDescription(sdp=data["offer"]["sdp"], type=data["offer"]["type"])
             await self.pc.setRemoteDescription(offer)
             answer = await self.pc.createAnswer()
@@ -323,7 +297,7 @@ class ClassBridgeStudentApp(QWidget):
                 "answer": {"sdp": self.pc.localDescription.sdp, "type": self.pc.localDescription.type}
             }))
             self.status_badge.setText(" LIVE ")
-            self.status_badge.setStyleSheet("background-color: #dc2626; color: white; font-weight: bold;")
+            self.status_badge.setStyleSheet("background-color: #dc2626; color: white; font-weight: bold; font-size: 12px; border-radius: 4px; padding: 4px 8px;")
         except Exception as e:
             print(f"Error handling offer: {e}")
 
@@ -341,17 +315,13 @@ class ClassBridgeStudentApp(QWidget):
     async def render_remote_track(self, track):
         try:
             while True:
-                # Add a timeout so track.recv() doesn't hang indefinitely on a dead network stream
-                frame = await asyncio.wait_for(track.recv(), timeout=5.0)
+                frame = await track.recv()
                 img = frame.to_ndarray(format="bgr24")
                 rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb_img.shape
                 bytes_per_line = ch * w
                 qt_img = QImage(rgb_img.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
                 self.teacher_video.setPixmap(QPixmap.fromImage(qt_img))
-        except asyncio.TimeoutError:
-            print("Remote video frame timeout. Network may have stalled.")
-            self.teacher_video.setText("Video stream stalled\nReconnecting...")
         except Exception as e:
             print(f"Remote track error: {e}")
             self.teacher_video.setText("Video stream lost\nReconnecting...")
